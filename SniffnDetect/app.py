@@ -3,13 +3,6 @@ import asyncio
 from sniffndetect import *
 from datetime import datetime
 from quart import Quart, websocket, request, render_template
-import sys
-import os
-
-
-def is_admin():
-    # Vérifie si le script est exécuté avec des privilèges d'administrateur
-    return os.getuid() == 0 if os.name != 'nt' else os.getpid() == 0
 
 app = Quart(__name__)
 sniffer = SniffnDetect()
@@ -79,13 +72,10 @@ async def ws():
         sniffer.stop()
         raise
 
-# Vérification des privilèges d'administrateur
 if not is_admin():
-    print("[-] Please execute the script with root or administrator privileges.\n[-] Exiting.")
-    sys.exit(1)  # Utilisez un code de sortie non zéro pour indiquer une erreur
+    sys.exit("[-] Please execute the script with root or administrator priviledges.\n[-] Exiting.")
 else:
     try:
-        app.run(debug=True)  # Active le mode debug
+        app.run()
     except KeyboardInterrupt:
-        print("[-] Ctrl + C triggered.\n[-] Shutting Down")
-        sys.exit(0)  # Utilisez un code de sortie zéro pour indiquer un arrêt normal
+        sys.exit("[-] Ctrl + C triggered.\n[-] Shutting Down")
