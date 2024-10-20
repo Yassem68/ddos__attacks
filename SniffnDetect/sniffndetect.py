@@ -30,7 +30,7 @@ class SniffnDetect():
         self.flag = False
 
         # Open the CSV file in append mode to log attacks
-        self.csv_file = open('attack_log.csv', 'a', newline='')  # Corrected filename
+        self.csv_file = open('attack_log.csv', 'a', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['Timestamp', 'Source IP', 'Destination IP', 'Attack Type', 'Packet Size'])
 
@@ -47,17 +47,21 @@ class SniffnDetect():
             self.PACKETS_QUEUE.task_done()
 
     def check_avg_time(self, activities):
+        if len(activities) < 1:
+            return False
+
         time = 0
         c = -1
-        while c > -31:
+        while c > -31 and abs(c) < len(activities):  # Assurer qu'on ne dépasse pas la taille de la liste
             time += activities[c][0] - activities[c-1][0]
             c -= 1
         time /= len(activities)
+        
         return (time < 2 and self.RECENT_ACTIVITIES[-1][0] - activities[-1][0] < 10)
 
     def set_flags(self):
         for category in self.FILTERED_ACTIVITIES:
-            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 5:  # Reduced threshold for quicker detection
+            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 1:
                 self.FILTERED_ACTIVITIES[category]['flag'] = self.check_avg_time(
                     self.FILTERED_ACTIVITIES[category]['activities'])
                 if self.FILTERED_ACTIVITIES[category]['flag']:
@@ -89,40 +93,42 @@ class SniffnDetect():
         if UDP in pkt:
             return  # Early return if it's a UDP packet
 
-        # Only process TCP packets
+        attack_type = None  # Initialiser le type d'attaque ici
+
+        # Process TCP packets (for SYN Flood and SYN-ACK Flood)
         if TCP in pkt:
             protocol.append("TCP")
             src_port = pkt[TCP].sport
             dst_port = pkt[TCP].dport
             tcp_flags = pkt[TCP].flags.flagrepr()
 
-            # Log TCP packet details in the CSV file
-            attack_type = None
-            if tcp_flags == "S":
+            if tcp_flags == "S":  # SYN flood detection
                 self.FILTERED_ACTIVITIES['TCP-SYN']['activities'].append([pkt.time])
                 attack_type = "SYN Flood"
-            elif tcp_flags == "SA":
+                print(f"SYN Flood detected from {src_ip} to {dst_ip}")  # Log SYN Flood detection
+            elif tcp_flags == "SA":  # SYN-ACK flood detection
                 self.FILTERED_ACTIVITIES['TCP-SYNACK']['activities'].append([pkt.time])
                 attack_type = "SYN-ACK"
+                print(f"SYN-ACK Flood detected from {src_ip} to {dst_ip}")  # Log SYN-ACK detection
 
-            # Log the packet details with attack type
-            self.csv_writer.writerow([pkt.time, src_ip, dst_ip, attack_type if attack_type else "TCP", len(pkt)]) 
-
+        # Process ICMP packets (for PoD and Smurf)
         if ICMP in pkt:
             protocol.append("ICMP")
             icmp_type = pkt[ICMP].type
-            # 8 for echo-request and 0 for echo-reply
+
             if src_ip == self.MY_IP and src_mac != self.MY_MAC:
                 self.FILTERED_ACTIVITIES['ICMP-SMURF']['activities'].append([pkt.time])
                 attack_type = "SMURF"
+                print(f"Smurf attack detected from {src_ip} to {dst_ip}")  # Log Smurf detection
+
             if Raw in pkt and len(pkt[Raw].load) > 1024:
                 self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([pkt.time])
                 attack_type = "POD"
                 print(f"PoD attack detected from {src_ip} to {dst_ip}")  # Log PoD detection
 
-            # Log the packet details with attack type for ICMP
-            if attack_type:
-                self.csv_writer.writerow([pkt.time, src_ip, dst_ip, attack_type, len(pkt)]) 
+        # Log the packet details with attack type
+        if attack_type:  # Assurez-vous d'avoir un type d'attaque
+            self.csv_writer.writerow([pkt.time, src_ip, dst_ip, attack_type, len(pkt)])  # Enregistre le type d'attaque
 
         self.RECENT_ACTIVITIES.append(
             [pkt.time, protocol, src_ip, dst_ip, src_mac, dst_mac, src_port, dst_port, None, None])
