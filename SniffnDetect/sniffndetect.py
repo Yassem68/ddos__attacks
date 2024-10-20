@@ -57,12 +57,13 @@ class SniffnDetect():
 
     def set_flags(self):
         for category in self.FILTERED_ACTIVITIES:
-            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 20:
+            if len(self.FILTERED_ACTIVITIES[category]['activities']) > 5:  # Reduced threshold for quicker detection
                 self.FILTERED_ACTIVITIES[category]['flag'] = self.check_avg_time(
                     self.FILTERED_ACTIVITIES[category]['activities'])
                 if self.FILTERED_ACTIVITIES[category]['flag']:
+                    print(f"{category} attack detected! Setting flag to True.")
                     self.FILTERED_ACTIVITIES[category]['attacker-mac'] = list(
-                        set([i[3] for i in self.FILTERED_ACTIVITIES[category]['activities']]))
+                        set([i[3] for i in self.FILTERED_ACTIVITIES[category]['activities'] if len(i) > 3]))
 
     def analyze_packet(self, pkt):
         src_ip, dst_ip, src_port, dst_port, tcp_flags, icmp_type = None, None, None, None, None, None
@@ -117,6 +118,7 @@ class SniffnDetect():
             if Raw in pkt and len(pkt[Raw].load) > 1024:
                 self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([pkt.time])
                 attack_type = "POD"
+                print(f"PoD attack detected from {src_ip} to {dst_ip}")  # Log PoD detection
 
             # Log the packet details with attack type for ICMP
             if attack_type:
