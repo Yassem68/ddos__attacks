@@ -13,7 +13,6 @@ SniffnDetect v.1.1
 -----------------------
 '''
 
-
 class SniffnDetect():
     def __init__(self):
         self.INTERFACE = conf.iface
@@ -116,7 +115,7 @@ class SniffnDetect():
 
         attack_type = None
 
-        # ICMP Smurf and PoD Attack detection
+        # Handle ICMP attacks
         if ICMP in pkt:
             if src_ip == self.MY_IP and src_mac != self.MY_MAC:
                 self.FILTERED_ACTIVITIES['ICMP-SMURF']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
@@ -126,21 +125,21 @@ class SniffnDetect():
                 self.FILTERED_ACTIVITIES['ICMP-POD']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                 attack_type = 'ICMP-PoD PACKET'
 
-        # TCP SYN and SYN-ACK Attack detection
+        # Handle TCP SYN and SYN-ACK attacks
         if dst_ip == self.MY_IP:
             if TCP in pkt:
                 if tcp_flags == "S":  # TCP SYN
                     self.FILTERED_ACTIVITIES['TCP-SYN']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                     attack_type = 'TCP-SYN PACKET'
-
                 elif tcp_flags == "SA":  # TCP SYN-ACK
                     self.FILTERED_ACTIVITIES['TCP-SYNACK']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
                     attack_type = 'TCP-SYNACK PACKET'
 
                 # Check for SYN Flood
-                if len(self.FILTERED_ACTIVITIES['TCP-SYN']['activities']) > 10:  # More than 10 SYNs in a short time
+                if self.FILTERED_ACTIVITIES['TCP-SYN']['activities']:
                     self.FILTERED_ACTIVITIES['SYN-FLOOD']['activities'].append([pkt.time, src_ip, dst_ip, src_mac])
-                    attack_type = 'SYN-FLOOD ATTACK'
+                    if len(self.FILTERED_ACTIVITIES['TCP-SYN']['activities']) > 10:  # Si plus de 10 SYN en peu de temps
+                        attack_type = 'SYN-FLOOD ATTACK'
 
         # Log attack if it matches our interest
         if attack_type:
@@ -175,11 +174,8 @@ class SniffnDetect():
             'TCP-SYNACK': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-POD': {'flag': False, 'activities': [], 'attacker-mac': []},
             'ICMP-SMURF': {'flag': False, 'activities': [], 'attacker-mac': []},
-            'SYN-FLOOD': {'flag': False, 'activities': []},
+            'SYN-FLOOD': {'flag': False,}
         }
-        self.csv_file.close()
-
-
 def is_admin():
     try:
         return os.getuid() == 0  # For Linux-based systems
